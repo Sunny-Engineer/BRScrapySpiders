@@ -140,7 +140,7 @@ class GradebeamSpider(BaseSpider):
     def __init__(self, url = None , projectID=None, securityKey=None):
         self.url = url  # source file name
         super().__init__()
-        coloredlogs.install(logger=self.logger)
+        coloredlogs.install(logger=self.log)
         self.log.info("URL = {}".format(url))
         self.create_project_params['sourceSystem'] = self.name
 
@@ -272,7 +272,7 @@ class PipelineSuiteSpider(BaseSpider):
         self.projectID = projectID
         self.securityKey = securityKey
         super().__init__()
-        coloredlogs.install(logger=self.logger)
+        coloredlogs.install(logger=self.log)
         self.log.info("URL = {}".format(url))
         self.log.info("Project Id  = {}".format(projectID))
         self.log.info("Security Key = {}".format(securityKey))
