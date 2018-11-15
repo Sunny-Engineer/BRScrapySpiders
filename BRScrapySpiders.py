@@ -24,77 +24,88 @@ class BaseSpider(scrapy.Spider):
 
     s3 = boto3.resource('s3')
     create_project_params = {}
+    aws_session = None
+    dynamo_resource = None
+    bucket_name = None
 
     def __init__(self):
         coloredlogs.install(logger=self.log)
         self.log.info("About to dispatch in Base Spider")
+        aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+        aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        aws_region = os.environ.get("AWS_REGION")
+        aws_session_token = os.environ.get("aws_session_token")
+        self.bucket_name = os.environ.get("BR_TEMP_VAULT")
+        logger.info("aws_access_key_id = " + aws_access_key_id)
+        logger.info("aws_secret key =" + aws_secret_access_key)
+        logger.info("aws Region =" + aws_region)
+
+        # Create a session and resources to write Use case information to AWS
+        aws_session = AmazonLib.create_S3_session(aws_region, aws_access_key_id, aws_secret_access_key,
+                                                  aws_session_token)
+        self.dynamo_resource = AmazonLib.create_dynamo_resource(aws_session)
         dispatcher.connect(self.spider_closed, signals.spider_closed)
 
     def download_file(self, response):
-        self.log.info("About to dispatch in Download File")
+        logger = logging.getLogger()
+        logger.info("About to dispatch in Download File")
+
         folder_name = response.meta['folder_name']
         origin_path = response.url
         file_name = response.meta['file_name']
-        self.log.info("folder_name = {}" .format(folder_name))
-        self.log.info("origin_path = {}".format(origin_path))
-        self.log.info("file_name = {}".format(file_name))
-        self.create_project_params['project_files'].append(
+
+        logger.info("folder_name = {}".format(folder_name))
+        logger.info("origin_path = {}".format(origin_path))
+        logger.info("file_name = {}".format(file_name))
+
+        self.s3.Bucket(self.bucket_name).put_object(Key=folder_name + '/' + file_name,Body=response.body)
+        self.data['project_files'].append(
             {'folder_name': folder_name, 'file_name': file_name, 'original_path': origin_path})
+        #
+        #  Add logic here to write 925 record to DynamoDB
         try:
-            # this is the AWS Account for Development
-            aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID")
-            aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
-            aws_region = os.environ.get("AWS_REGION")
-            aws_session_token = os.environ.get("aws_session_token")
-
-            bucket_name = os.environ.get("BR_TEMP_VAULT")
-
-            self.log.info("aws_access_key_id = " + aws_access_key_id)
-            self.log.info("aws_secret key =" + aws_secret_access_key)
-            self.log.info("aws Region =" + aws_region)
-
-            # Create a session and resources to write Use case information to AWS
-            aws_session = AmazonLib.create_S3_session(aws_region, aws_access_key_id, aws_secret_access_key, aws_session_token)
-            s3_resource = AmazonLib.create_S3_resource(aws_session)
-            dynamo_resource = AmazonLib.create_dynamo_resource(aws_session)
-
-            #initialize fields needed by API
-            bucket_name = self.settings.attributes['BUCKET_NAME'].value
-
             # Open the table object,  This should have a try catch around it!
             try:
                 tablename = "925FilePreprocessing"
-                newdytable = AmazonLib.open_table(dynamo_resource, tablename)
+                newdytable = AmazonLib.open_table(self.dynamo_resource, tablename)
             except Exception as e:
-                self.log.error("The Open Table Call for {} failed.".format(tablename))
+                logger.exception(e)
+                logger.info("The Open Table Call for {} failed.".format(tablename))
+
             # write a record into the Preprocessing WIP table.
             # Define parameters for 925 write
             params925 = {}
             params925['source_file_id'] = str(uuid.uuid4())
+
             # params925['doc_id'] = doc_id - This is not set until the record is processed by the 925 processor
-            #params925['doc_type'] = doc_type
+            # params925['doc_type'] = doc_type
             # params925['file_id'] = file_id - This is not set until the record is processed by the 925 processor
-            #params925['file_key'] = sourcekey
+            # params925['file_key'] = sourcekey
             params925['file_original_filename'] = file_name
             params925['original_filepath'] = origin_path
 
             params925['project_id'] = "123"
             params925['project_name'] = "Test project_name"
             # params925['sequence_num'] = sequence_num
-            #params925['source_system'] = source_system
-            #params925['submission_id'] = submission_id
-            #params925['submission_datetime'] = submission_datetime
-            #params925['submitter_email'] = submitter_email
-            #params925['user_timezone'] = user_timezone
-            params925['vault_bucket'] = bucket_name
+            # params925['source_system'] = source_system
+            # params925['submission_id'] = submission_id
+            # params925['submission_datetime'] = submission_datetime
+            # params925['submitter_email'] = submitter_email
+            # params925['user_timezone'] = user_timezone
+            params925['vault_bucket'] = self.bucket_name
 
             params925['process_status'] = 'queued'
-            #params925['create_datetime'] = submission_datetime
-            #params925['edit_datetime'] = submission_datetime
+            # params925['create_datetime'] = submission_datetime
+            # params925['edit_datetime'] = submission_datetime
             params925['process_attempts'] = 0
-
             AmazonLib.write_925item(newdytable, params925)
-            self.log.info('-------  925 WIP Table write completed  ---------------------')
+            logger.info('-------  925 WIP Table write completed  ---------------------')
+
+        except Exception as e:
+            logger.exception(e)
+            logger.info(
+                "Use Case Builder Failed:  local File= {},   S3 Destination = {}".format(bucket_name, file_name))
+
 
         except Exception as e:
             # logger.exception(e)
