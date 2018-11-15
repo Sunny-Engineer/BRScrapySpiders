@@ -12,11 +12,12 @@ import logging
 import os
 import uuid
 import coloredlogs
+from urllib.parse import urlparse, parse_qs
 import br_api
 import AmazonLib
 
-log = logging.getLogger("920 lambda routine")
-coloredlogs.install(logger=log)
+logger = logging.getLogger("920 lambda routine")
+coloredlogs.install(logger=logger)
 
 
 class BaseSpider(scrapy.Spider):
@@ -139,7 +140,7 @@ class GradebeamSpider(BaseSpider):
     def __init__(self, url = None , projectID=None, securityKey=None):
         self.url = url  # source file name
         super().__init__()
-        coloredlogs.install(logger=self.log)
+        coloredlogs.install(logger=self.logger)
         self.log.info("URL = {}".format(url))
         self.create_project_params['sourceSystem'] = self.name
 
@@ -244,6 +245,7 @@ class GradebeamSpider(BaseSpider):
                      "&__EVENTVALIDATION="+formdata['EVENTVALIDATION']+\
                      "&__ASYNCPOST=true&RadAJAXControlID=ctl00_MainContentPlaceHolder_radAjaxManager"
            url = "https://www.gradebeam.com/Attachment/FolderView.aspx"
+           self.log.info("Getting the file data  from web page....")
            result = requests.request("POST", url, data=payload, headers=headers)
            files = re.findall(r"javascript:DownloadAttachment\(\'([^\']+)','([^\']+)'",result.text)
            for item in files:
@@ -257,7 +259,7 @@ class GradebeamSpider(BaseSpider):
         body_string = response.body_as_unicode()
         yield scrapy.Request(url=body_string.replace('"',''), callback=self.download_file, meta={'file_name': response.meta['file_name'],'folder_name': "{name}/{projectid}/{folder_name}".format(
             name=self.name,
-            projectid=self.data['Project Number'],
+            projectid=self.create_project_params["project_number"],
             folder_name=response.meta['folder_name'])})
 
 # --------------  Process Pipeline Suite Projects -----------------------------
@@ -270,7 +272,7 @@ class PipelineSuiteSpider(BaseSpider):
         self.projectID = projectID
         self.securityKey = securityKey
         super().__init__()
-        coloredlogs.install(logger=self.log)
+        coloredlogs.install(logger=self.logger)
         self.log.info("URL = {}".format(url))
         self.log.info("Project Id  = {}".format(projectID))
         self.log.info("Security Key = {}".format(securityKey))
@@ -283,8 +285,7 @@ class PipelineSuiteSpider(BaseSpider):
     def parse(self, response):
         nexts = re.findall(r"\/([^\/]+)$" , response.url)
         if len(nexts) == 0:
-            self.log.error("Invalid URL!")
-            self.data['status'] = "Invalid URL!"
+            self.create_project_params['status'] = "Invalid URL!"
             return
         next = nexts[0]
         form_data = {
@@ -299,10 +300,10 @@ class PipelineSuiteSpider(BaseSpider):
 
     def parse_login(self , response):
         if response.url != self.url:
-            self.log.Error("Invalid Project ID and Security Key!")
             self.create_project_params['status'] = "Invalid Project ID and Security Key!"
             return
         self.log.info("Logged in Successfully.")
+        self.log.info("Getting the  data  from web page....")
         self.create_project_params["project_number"]= response.xpath('//th[text()="Project #"]/following-sibling::td/text()').extract_first()
         self.create_project_params["project_name"] = self.clean_text(response.xpath('//th[contains(text(),"Project Name")]/following-sibling::td/text()').extract_first())
         self.create_project_params["project_address1"]  = self.clean_text(
@@ -327,35 +328,332 @@ class PipelineSuiteSpider(BaseSpider):
                file_name  =file.split('/')[-1]
                yield scrapy.Request(url='https://'+file, callback=self.download_file , meta={'file_name':file_name , 'folder_name':"{name}/{projectid}/{folder_name}".format(name = self.name , projectid =self.projectID , folder_name = folder_name )})
 
+# --------------  Process Smartbid Projects -----------------------------
+
+class SmartbidSpider(BaseSpider):
+    name = 'smartbid'
+    log = logging.getLogger(name)
+
+    def __init__(self, url=None, projectID=None, securityKey=None):
+        self.url = url  # source file name
+        super().__init__()
+        coloredlogs.install(logger=self.log)
+        self.log.info("URL = {}".format(url))
+        self.create_project_params['sourceSystem'] = self.name
+
+    def start_requests(self):
+        self.log.info("Start Scraping...")
+        url = "https://api.smartinsight.co/token"
+        parsed_url = urlparse(self.url)
+        params = parse_qs(parsed_url.query)
+        self.log.info("Login the website...")
+        try:
+            cId = params['cId'][0].replace('bp_' ,'')
+            sPassportKey = params['sPassportKey'][0]
+            sBidId = params['sBidId'][0]
+            form_data = {
+                'grant_type': "passport_key",
+                'bidid': sBidId,
+                'commdetailid': cId,
+                'key': sPassportKey,
+                'typepassportkey':"bidproject_passportkey"
+            }
+            yield scrapy.http.FormRequest(url=url, method='POST', formdata=form_data,
+                                          callback=self.parse, meta=form_data)
+        except:
+            self.create_project_params['status'] = "Invalid URL!"
+
+    def parse(self , response):
+        self.log.info("Logged in the website successfully....")
+        body = response.body_as_unicode()
+        json_data = json.loads(body)
+        access_token = json_data['access_token']
+        account_id =  json_data['account_id']
+        url = "https://api.smartinsight.co/api/projects/getbidproject?bidProjectId={bidProjectId}&personId={personId}&bidProjectType=Invited".format(personId = account_id , bidProjectId = response.meta['bidid'] )
+        querystring_project_page = {
+            'bidProjectId': response.meta['bidid'],
+            'personId': account_id,
+            'bidProjectType': 'Invited'
+        }
+        payload_project_page = "------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"grant_type\"\r\n\r\npassport_key" \
+                  "\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"bidid\"\r\n\r\n{bidProjectId}" \
+                  "\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"commdetailid\"\r\n\r\n{commdetailid}" \
+                  "\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"key\"\r\n\r\n{key}" \
+                  "\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"typepassportkey\"\r\n\r\nbidproject_passportkey" \
+                  "\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--"\
+            .format(bidProjectId =  response.meta['bidid'], commdetailid = response.meta['commdetailid'] , key = response.meta['key'])
+        headers_project_page= {
+            'content-type': "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW",
+            'Content-Type': "application/x-www-form-urlencoded",
+            'Authorization': "Bearer {}".format(access_token),
+            'Cache-Control': "no-cache",
+        }
+        response_project_page = requests.request("GET", url, data=querystring_project_page, headers=headers_project_page, params=payload_project_page)
+        result_project_page = json.loads(response_project_page.text)
+        SystemId =  result_project_page['BidProject']['SystemId']
+        self.log.info("Getting the  data  from web page....")
+        self.create_project_params["project_number"] = response.meta['bidid']
+        self.create_project_params["project_name"] = result_project_page['BidProject']['Title']
+        self.create_project_params["project_address1"] =result_project_page['BidProject']['Address']
+        self.create_project_params["project_city"] = result_project_page['BidProject']['City']
+        self.create_project_params["project_state"] =result_project_page['BidProject']['State']
+        self.create_project_params["project_zip"] = result_project_page['BidProject']['Zip']
+        self.create_project_params["project_bid_datetime"] = result_project_page['BidProject']['FullBidDueDate']
+        self.create_project_params["project_desc"] = result_project_page['BidProject']['ProjectDescription']
+        self.create_project_params['project_files'] = []
+        self.create_project_params["project_admin_user_id"] = "Admin User ID From Spider!"
+        self.create_project_params['status'] ="Success"
+        self.log.info("Getting the file data  from web page....")
+        sPlanRoomString = result_project_page['sPlanRoomString']
+        fileids = re.findall(r"\(\'onPreviewFile\'\,\s\'([^\']+)" , sPlanRoomString)
+        url_file_page = "https://api.smartinsight.co/api/projects/getstackfilelist"
+        payload_file_page = "FileId={fileid}&BidProjectId={BidProjectId}&SystemId=590&PersonId={PersonId}&BidProjectType=Invited&ContainerId_DeepZoom=1"\
+            .format(BidProjectId = response.meta['bidid'],
+                    PersonId = account_id,
+                    fileid = fileids[0])
+        headers_file_page = {
+            'Content-Type': "application/x-www-form-urlencoded",
+            'Authorization': "Bearer {}".format(access_token),
+            'Cache-Control': "no-cache"
+        }
+        response_file_page = requests.request("POST", url_file_page, data=payload_file_page, headers=headers_file_page)
+        json_data_file_page = json.loads(response_file_page.text)
+        for i , item in enumerate(json_data_file_page['lFiles'][:-1]):
+             folders = []
+             if json_data_file_page['lFiles'][i]['Type'] == "Folder":
+                 j = i
+                 for n in range(json_data_file_page['lFiles'][i]['Level'], -1, -1):
+                     for p in range(j, -1,-1):
+                         if json_data_file_page['lFiles'][p]['Type'] == "Folder" and json_data_file_page['lFiles'][p]['Level'] == n:
+                             folders.append(json_data_file_page['lFiles'][p]['name'])
+                             break
+                         j = p
+
+                 folder_name  = '/'.join(reversed(folders))
+             if json_data_file_page['lFiles'][i]['Type'] == "File":
+                 filename  = json_data_file_page['lFiles'][i]['name']
+             else:
+                 filename = ''
+             if json_data_file_page['lFiles'][i+1]['Type'] == "Plan":
+                 sourceId = json_data_file_page['lFiles'][i+1]['sourceId'].replace('_P1', '')
+             else:
+                 sourceId = ''
+             if folder_name != '' and filename != ""  and sourceId != "":
+                 filekey = str(sourceId)+'.'+str(response.meta['bidid'])+'.'+str(SystemId)+'.'+'1'
+                 base64filekey = base64.b64encode(filekey.encode('ascii'))
+                 url_file = "http://smartbidservice.cloudapp.net/DownloadFile.aspx?c="+base64filekey.decode("utf-8") +"&n="+filename
+                 yield scrapy.Request(url= url_file, callback=self.download_file,
+                                               meta={'file_name':filename , 'folder_name': "{name}/{project_id}/{folder_name}".format(name = self.name , project_id =self.create_project_params["project_number"] , folder_name = folder_name)})
+
+# --------------  Process Building  Connected Projects -----------------------------
+class BuildingConnectedSpider(BaseSpider):
+    name = 'buildingconnected'
+    log = logging.getLogger(name)
+
+    def __init__(self, url = None , projectID=None, securityKey=None):
+        self.url = url  # source file name
+        self.username = projectID
+        self.password = securityKey
+        super().__init__()
+        coloredlogs.install(logger=self.log)
+        self.log.info("URL = {}".format(url))
+        self.log.info("User Name  = {}".format(projectID))
+        self.log.info("Password  = {}".format(securityKey))
+        self.create_project_params['sourceSystem'] = self.name
+
+    def start_requests(self):
+        self.log.info("Start Scraping...")
+        url = "https://app.buildingconnected.com/api/sso/status/login"
+        self.log.info("Login the website...")
+        form_data = {
+            "email": self.username
+        }
+        self.log.info("Input the email...")
+        yield scrapy.http.FormRequest(url=url, method='GET', formdata=form_data, callback=self.parse)
+
+    def parse(self , response):
+        self.log.info("Input the password...")
+        url = "https://app.buildingconnected.com/api/sessions"
+        payload = {"username":"jhall@acmecontracting.net","password":"a123456","grant_type":"password"}
+        yield scrapy.FormRequest(url = url , method="POST" , formdata=payload ,callback=self.parse_password )
+
+    def parse_password(self , response):
+       self.log.info("Logged in the website successfully....")
+       keystrings = re.findall(r"\/([^\/]+)$" , self.url)
+       if len(keystrings) ==0:
+           self.create_project_params['status'] = "Invalid the URL"
+           return
+       base64filekey = base64.b64decode(keystrings[0])
+       decoded_string = base64filekey.decode("utf-8")
+       invitionids = re.findall(r"rfps\/([^\/]+)\/" , decoded_string)
+       if len(invitionids)==0:
+           self.create_project_params['status'] = "Invalid the URL"
+           return
+       invitation_id  = invitionids[0]
+       self.log.info("Get the project page....")
+       url = "https://app.buildingconnected.com/api/opportunities/"+invitation_id
+       yield scrapy.http.Request(url=url,  callback=self.parse_project)
+
+    def parse_project(self , response):
+        self.log.info("Getting the  data  from web page....")
+        jsonData  = json.loads(response.body_as_unicode())
+        self.create_project_params["project_number"] = jsonData['projectId']
+        self.create_project_params["project_name"] = jsonData['name']
+        try:
+            self.create_project_params["project_address1"] = jsonData['location']['streetNumber']+" "+jsonData['location']['streetName']
+        except:
+            try:
+                self.create_project_params["project_address1"] = jsonData['location']['streetName']
+            except:
+                self.create_project_params["project_address1"] = ''
+                self.create_project_params["project_city"] = jsonData['location']['city']
+        self.create_project_params["project_state"] =jsonData['location']['state']
+        try:
+            self.create_project_params["project_zip"] = jsonData['location']['zip']
+        except:
+            self.create_project_params["project_zip"] = ''
+        self.create_project_params["project_bid_datetime"] =jsonData['dateDue']
+        try:
+            self.create_project_params["project_desc"] = jsonData['description']
+        except:
+            self.create_project_params["project_desc"] =  ''
+        self.create_project_params['project_files'] = []
+        self.create_project_params["project_admin_user_id"] = "Admin User ID From Spider!"
+        self.create_project_params['status'] = "Success"
+        yield scrapy.http.Request(url=response.url+"/files", callback=self.parse_files)
+
+    def parse_files(self , response):
+        self.log.info("Getting the file data  from web page....")
+        data  = json.loads(response.body_as_unicode())['items']
+        folders = []
+        files = []
+        for item in data:
+          if   item['type'] == "FOLDER":
+              folders.append(item)
+        for item in data:
+            if item['type'] =="FILE":
+                status = False
+                for item2 in folders:
+                    if item['scope']['parentId'] == item2['_id']:
+                        status = True
+                        files.append({'file':item['name'] , 'folder': item2['name'] , 'file_location':item['downloadUrl']})
+                if status == False:
+                    files.append({'file': item['name'], 'folder':'', 'file_location': item['downloadUrl']})
+        for item in files:
+            if item['folder'] == '':
+                folder_link = "{name}/{projectid}".format(
+                    name=self.name,
+                    projectid=  self.create_project_params["project_number"])
+            else:
+                folder_link = "{name}/{projectid}/{folder_name}".format(
+                    name=self.name,
+                    projectid=  self.create_project_params["project_number"],
+                    folder_name=item['folder'])
+            yield scrapy.Request(url='https://app.buildingconnected.com' + item['file_location'], callback=self.download_file, meta={'file_name': item['file'],
+                                                                                           'folder_name':folder_link})
+
+
+# --------------  Process Struxture Plans Projects -----------------------------
+
+class StruxturePlansSpider(BaseSpider):
+    name = 'struxtureplans'
+    url = "https://u5992612.ct.sendgrid.net/wf/click?upn=-2FCtq5rbRgaWbydvLqsY-2FmA0mDswAhVpH6kj-2B49iOtTbrp9zBdlIm5YYeTWWVb7bV5bN9254bcQDx2w6I1Iuu2aJe4tIF8k2oo0MXql4ADTY-3D_1OpY3RcHO6dRZln5p1Fm1ef2pFNgDNe2VBc02FW17vTsNLLGDbIQ8VtAeLDjdk7-2BlMVATvE7fknAVPncy6t-2FGI-2FKjBnBi6ZtJa1q5zV7Y9vmgqnrf0IHPy1R49dA8NLySBbB7imsFS-2B5-2BrNO-2Fxj7o3030ICOW-2FeHIRJTfulFD5mHhfatXTEnA4TvSe9xJj9cKS8I4qfe2jG8h84x63FPH6j2Y-2FZXhp5vDI7sK7Qoc6lZDE8VmOhCijkUN8OJ676-2BmXQBgRowc-2B4QESC5VaWiGT0kEdNSWwd-2FWbd5abuLdXQK8l-2BDEsCXyucoJcQgjuEc-2BRDYgd2gQZemjrIgJ7NV5abTJYvBvvYpx6xmG-2FoLHCOcZN8Ow-2BSuO3wevsDXVGsYoEdtyD98-2Fzk0dCpg75Oo1A-3D-3D"
+    log = logging.getLogger(name)
+
+    def __init__(self, url=None, projectID=None, securityKey=None):
+        self.url = url  # source file name
+        super().__init__()
+        coloredlogs.install(logger=self.log)
+        self.log.info("URL = {}".format(url))
+        self.create_project_params['sourceSystem'] = self.name
+
+    def start_requests(self):
+        self.log.info("Start Scraping...")
+        self.log.info("Login the website...")
+        yield scrapy.Request(url=self.url, callback=self.parse)
+
+    def parse(self , response):
+        self.log.info("Logged in the website successfully....")
+        self.log.info("Getting the  data  from web page....")
+        project_ids = re.findall(r'jobs\/([0-9]+)\/details', response.url)
+        if len(project_ids)==0:
+            self.create_project_params['status'] = "Invalid Url!"
+            return
+        self.create_project_params["project_number"] = project_ids[0]
+        self.create_project_params["project_name"] = self.clean_text(response.xpath('//h1[@class="project-name"]/text()').extract_first())
+        self.create_project_params["project_address1"] = ''
+        locations =  response.xpath('//h3[text()="Location"]/following-sibling::p/text()').extract_first()
+        if len(locations.split(','))>1:
+            self.create_project_params["project_city"] =locations.split(',')[0]
+            if len(locations.split(',')[1].split(' '))>1:
+                self.create_project_params["project_state"] = locations.split(',')[1].strip().split(' ')[0]
+                self.create_project_params["project_zip"] = locations.split(',')[1].strip().split(' ')[1]
+            else:
+                self.create_project_params["project_state"] = ''
+                self.create_project_params["project_zip"] = ''
+        else:
+            self.create_project_params["project_city"]= ''
+            self.create_project_params["project_bid_datetime"] =  response.xpath('//strong[text()="Bid Date"]/following-sibling::text()[1]').extract_first()
+        self.create_project_params["project_desc"] =' '.join(response.xpath('//div[@class="item notes"]/div[@class="details"]/p').extract())
+        self.create_project_params['project_files'] = []
+        self.create_project_params["project_admin_user_id"] = "Admin User ID From Spider!"
+        self.create_project_params['status'] = "Success"
+        self.log.info("Getting the file data  from web page....")
+        for  file in response.xpath('//h3[text()="Documents"]/following-sibling::div/a'):
+            file_link  = file.xpath('./@href').extract_first()
+            file_name  = file.xpath('./text()').extract_first()
+            yield scrapy.Request(url='https://www.struxtureplans.com'+file_link.replace('/document/', '/document/source/'), callback=self.download_file , meta={'file_name':file_name , 'folder_name':"{name}/{projectid}/{folder_name}".format(name = self.name , projectid =self.create_project_params["project_number"] , folder_name = "Documents" )})
+
+
+
 
 def br_scrape(soucesystem , url, username, password):
-    log.info("Selecting the sourceSystem......")
+    logger.info("Selecting the sourceSystem......")
     # this routine is called from the 920 lambda routine, or other external applications and passes the information necessary to scrape the site.
     try:
         process = CrawlerProcess({'USER_AGENT': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1)'})
-
         if soucesystem == "pipelinesuite":
             process.crawl(PipelineSuiteSpider , url = url, projectID = username, securityKey = password)
-
         elif soucesystem == "gradebeam":
             process.crawl(GradebeamSpider ,  url = url, projectID = None, securityKey = None)
+        elif soucesystem == "smartbid":
+            process.crawl(SmartbidSpider ,  url = url, projectID = None, securityKey = None)
+        elif soucesystem == "buildingconnected":
+            process.crawl(BuildingConnectedSpider ,  url = url, projectID = username, securityKey = password)
+        elif soucesystem == "struxtureplans":
+            process.crawl(StruxturePlansSpider ,  url = url, projectID = username, securityKey = password)
 
         process.start()
 
     except Exception as e:
-        log.error("The br_scrape routine failed with error = {} " .format(e))
+        logger.error("The br_scrape routine failed with error = {} " .format(e))
 
 if __name__ == "__main__":
 
     try:
-        log.info("About to scrape gradebeam")
+        logger.info("About to scrape gradebeam")
         url = "https://www1.gradebeam.com/bidresponse/e2l0YmlkOjEzNDI2NjAzMyxvcmdpZDo5NzA5NDUsaXRicmVzcG9uc2U6MCx1c2VyaWQ6MH0="
         br_scrape("gradebeam", url, "", "")
-        log.info("About to scrape pipeline")
+        logger.info("About to scrape pipeline")
         url = "https://fortneyweygandt.pipelinesuite.com/ehPipelineSubs/dspProject/projectID/118431"
         projectID = "94505"
         securityKey = "G3qNxcCb9"
-        log.info("Checking the Url and Data...")
+        logger.info("Checking the Url and Data...")
         br_scrape("pipelinesuite", url, projectID, securityKey)
+        logger.info("About to scrape gradebeam")
+        url = "https://secure.smartbidnet.com/Main/Login.aspx?cId=bp_587275071&sPassportKey=0D415A5C1527C8F32965D7B34AB9424A250AB275&sBidId=393182&e=1"
+        br_scrape("smartbid", url, "", "")
+        logger.info("About to scrape buildingconnected")
+        url = "https://app.buildingconnected.com/_/action/L18vcmZwcy81YmE2YmI4NTUyOGI3NzAwMzIyNGM0YTgvMmM1ZjRkZTgtMzk4Ny00OTdiLWI2YjAtMThiZTE0YzE4NTM2P3NoYXJlPTAmaW52aXRlcklkPTU5MWM1Zjc4NDM3MTllMTAwMDI0YjQ5ZiZpbnZpdGVlSWQ9NWJhNmJiODU1MjhiNzcwMDMyMjRjNGEz"
+        username = "jhall@acmecontracting.net"
+        password = "a123456"
+        logger.info("Checking the Url and Data...")
+        br_scrape("buildingconnected", url, username, password)
+        logger.info("About to scrape struxtureplans")
+        url = "https://u5992612.ct.sendgrid.net/wf/click?upn=-2FCtq5rbRgaWbydvLqsY-2FmA0mDswAhVpH6kj-2B49iOtTbrp9zBdlIm5YYeTWWVb7bV5bN9254bcQDx2w6I1Iuu2aJe4tIF8k2oo0MXql4ADTY-3D_1OpY3RcHO6dRZln5p1Fm1ef2pFNgDNe2VBc02FW17vTsNLLGDbIQ8VtAeLDjdk7-2BlMVATvE7fknAVPncy6t-2FGI-2FKjBnBi6ZtJa1q5zV7Y9vmgqnrf0IHPy1R49dA8NLySBbB7imsFS-2B5-2BrNO-2Fxj7o3030ICOW-2FeHIRJTfulFD5mHhfatXTEnA4TvSe9xJj9cKS8I4qfe2jG8h84x63FPH6j2Y-2FZXhp5vDI7sK7Qoc6lZDE8VmOhCijkUN8OJ676-2BmXQBgRowc-2B4QESC5VaWiGT0kEdNSWwd-2FWbd5abuLdXQK8l-2BDEsCXyucoJcQgjuEc-2BRDYgd2gQZemjrIgJ7NV5abTJYvBvvYpx6xmG-2FoLHCOcZN8Ow-2BSuO3wevsDXVGsYoEdtyD98-2Fzk0dCpg75Oo1A-3D-3D"
+        logger.info("Checking the Url and Data...")
+        br_scrape("struxtureplans", url, "", "")
+
+
     except Exception as e:
-        log.error(" error = {}".format(e))
+        logger.error(" error = {}".format(e))
