@@ -59,7 +59,7 @@ class BaseSpider(scrapy.Spider):
         logger.info("file_name = {}".format(file_name))
 
         self.s3.Bucket(self.bucket_name).put_object(Key=folder_name + '/' + file_name,Body=response.body)
-        self.data['project_files'].append(
+        self.create_project_params['project_files'].append(
             {'folder_name': folder_name, 'file_name': file_name, 'original_path': origin_path})
         #
         #  Add logic here to write 925 record to DynamoDB
@@ -104,12 +104,12 @@ class BaseSpider(scrapy.Spider):
         except Exception as e:
             logger.exception(e)
             logger.info(
-                "Use Case Builder Failed:  local File= {},   S3 Destination = {}".format(bucket_name, file_name))
+                "Use Case Builder Failed:  local File= {},   S3 Destination = {}".format(self.bucket_name, file_name))
 
 
         except Exception as e:
             # logger.exception(e)
-            self.log.error("Use Case Builder Failed:  local File= {},   S3 Destination = {}".format(bucket_name, file_name))
+            self.log.error("Use Case Builder Failed:  local File= {},   S3 Destination = {}".format(self.bucket_name, file_name))
 
 
     def clean_text(self , ptext):
