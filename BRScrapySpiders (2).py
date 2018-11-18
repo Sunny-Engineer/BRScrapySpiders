@@ -81,23 +81,21 @@ class BaseSpider(scrapy.Spider):
             # Define parameters for 925 write
             params925 = {}
             params925['source_file_id'] = str(uuid.uuid4())
-
             # params925['doc_id'] = doc_id - This is not set until the record is processed by the 925 processor
             # params925['doc_type'] = doc_type
             # params925['file_id'] = file_id - This is not set until the record is processed by the 925 processor
             # params925['file_key'] = sourcekey
             params925['file_original_filename'] = file_name
             params925['original_filepath'] = origin_path
-
             params925['project_id'] = self.project_attributes["project_id"]
             logger.info("project_id from system = {}" .format(params925['project_id']))
             params925['project_name'] = "Test project_name"
             # params925['sequence_num'] = sequence_num
             # params925['source_system'] = source_system
-            # params925['submission_id'] = submission_id
-            # params925['submission_datetime'] = submission_datetime
-            # params925['submitter_email'] = submitter_email
-            # params925['user_timezone'] = user_timezone
+            params925['submission_id'] = submission_id
+            params925['submission_datetime'] = submission_datetime
+            params925['submitter_email'] = submitter_email
+            params925['user_timezone'] = user_timezone
             params925['vault_bucket'] = self.bucket_name
 
             params925['process_status'] = 'queued'
@@ -128,15 +126,18 @@ class BaseSpider(scrapy.Spider):
         self.log.info("Scraped Result = {}".format(self.create_project_params))
         try:
             self.log.info("No project was found, so about to create a new project.")
+            self.log.info("About to create a project with following params - {}".format(self.create_project_params))
+
             # If no project is found, create a new one...
             create_project_results = br_api.br_CreateProjectDL(self.create_project_params)
-            self.log.info("  Project Created with Following Params - {}".format(self.create_project_params))
             create_project_status = create_project_results['status']
-            self.log.info("The br_CreateProjectDL call status = " + str(create_project_status))
+
+            self.log.info("The br_CreateProjectDL call status = {}"  .format(create_project_results))
             if create_project_status == "failed":
-                self.log.error("create project failed.  Params = " + str(self.create_project_params))
+                self.log.error("create project failed.  Params = {}" .format(self.create_project_params))
             else:
                 project_id = create_project_results['project_id']
+
         except Exception as e:
             self.log.error('Creating a new project for this submission failed:  ' + str(e))
             self.log.error("----------------------------------------------------------------------------------------")
@@ -170,29 +171,34 @@ class GradebeamSpider(BaseSpider):
 
     def parse(self , response):
         keystrings = re.findall(r"\/([^\/]+)$", self.url)
+
         if len(keystrings) == 0:
-            self.create_project_params['status'] = "Invalid the URL"
+            self.create_project_params['status'] = "Invalid URL"
             return
         try:
           base64filekey = base64.b64decode(keystrings[0])
           decoded_string = base64filekey.decode("utf-8")
         except:
-            self.create_project_params['status'] = "Invalid the URL"
+            self.create_project_params['status'] = "Invalid URL"
             return
+
         itbids = re.findall(r"itbid:([0-9]+)", decoded_string)
         if len(itbids) == 0 :
-            self.create_project_params['status'] = "Invalid the URL"
+            self.create_project_params['status'] = "Invalid URL"
             return
         else:
             itbid = itbids[0]
+
         orgids = re.findall(r"orgid:([0-9]+)", decoded_string)
         if len(orgids) == 0:
-            self.create_project_params['status'] = "Invalid the URL"
+            self.create_project_params['status'] = "Invalid URL"
             return
         else:
             orgid = orgids[0]
+
         self.log.info("Logged in the website successfully....")
         url = "https://www1.gradebeam.com/dataservices/itb/get/{itbid}/{orgid}".format(itbid = itbid , orgid = orgid)
+
         yield scrapy.Request(url = url, callback=self.parse_data , dont_filter=True , meta = {'orgid':orgid})
 
     def parse_data(self , response):
